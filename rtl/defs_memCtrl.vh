@@ -3,5 +3,8 @@
 `define STAT_REG_AXI_UART 4'h8
 `define CTRL_REG_AXI_UART 4'hC
 
-`define STATUS_OK 8'd0
-`define STATUS_ERR_SFD 8'd1
+`define STATUS_OK                         8'd0
+`define STATUS_ERR_INCOMPATIBLE_SIZE_TYPE 8'd1
+`define STATUS_ERR_UNSUPPORTED_TYPE       8'd2
+`define STATUS_ERR_BAD_ADDRESS            8'd3
+`define STATUS_ERR_CHECKSUM_MISMATCH      8'd4
