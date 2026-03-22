@@ -2,17 +2,19 @@
 
 module memCtrl #(
     parameter max_num_locations = 1024,    // max (1<<14) - 1
-    parameter node_id = 8'd0;
+    parameter node_id = 8'd0
 )(
     input clk,
     input rstn,
     // memory channel
     output reg        sram_we,
     output reg [9:0]  sram_addr,
-    output reg [31:0] sram_data,
+    output reg [31:0] sram_din,
+    input [3:0][ 7:0] sram_dout,
     output reg        rom_we,
     output reg [9:0]  rom_addr,
-    output reg [15:0] rom_data,
+    output reg [15:0] rom_din,
+    input [1:0][ 7:0] rom_dout,
 
     // axi uartdrv
     // read channel
@@ -42,17 +44,27 @@ typedef enum reg [5:0] {
     IDLE, REQ_RX_STATUS, GET_RX_STATUS, REQ_RX, RX_SFD, RX_DNODE, RX_SNODE,
     RX_SIZE0, RX_SIZE1, RX_TYPE, RX_ADDR0, RX_ADDR1, RX_DATA,
     RX_NUM_LOC0, RX_NUM_LOC1, RX_FCS,
-    ACT_RESET_CPU, ACT_STOP_CPU, ACT_START_CPU, ACT_WRITE_MEM, ACT_READ_MEM
+    ACT_RESET_CPU, ACT_STOP_CPU, ACT_START_CPU,
+    ACT_WRITE_MEM, ACT_WRITE_TO_4B_MEM, ACT_WRITE_TO_2B_MEM,
+    REQ_TX_STATUS, GET_TX_STATUS, REQ_TX, TX_SFD, TX_DNODE, TX_SNODE,
+    TX_SIZE0, TX_SIZE1, TX_TYPE, TX_STATUS, TX_DATA_4B_MEM, TX_DATA_2B_MEM, TX_FCS
 } state_t;
 state_t state, future_state;
 reg [7:0] s_node;
-reg [7:0] size;
+reg [15:0] size;
 reg [7:0] cmd_type;
 reg [15:0] addr;
-reg [7:0] data [0 : max_num_locations-1];
+reg [7:0] data [0 : 4*max_num_locations-1];
 reg [15:0] num_loc;
 reg [7:0] fcs_computed;
 reg [7:0] cmd_status;
+reg [7:0] in32rsh8, in16rsh8;
+wire [31:0] out32rsh8;
+wire [15:0] out16rsh8;
+wire [15:0] size_read =   1   +   (num_loc  <<  (addr[10] ? 2 : 1));
+reg [15:0] i;
+reg [1:0]  j4;
+reg        j2;
 
 always_ff @(posedge clk) begin
     if (!rstn) begin
@@ -126,6 +138,8 @@ always_ff @(posedge clk) begin
         RX_TYPE:
             if (rvalid) begin
                 cmd_type <= rdata;
+                // subtracting ADDR field width, size will represent only data payload width
+                size     <= size - 2;
                 fcs_computed <= fcs_computed - rdata;
                 case (rdata)    // check for legal size:type pair
                     0: begin
@@ -173,8 +187,10 @@ always_ff @(posedge clk) begin
                 addr[15:8] <= rdata;
                 fcs_computed <= fcs_computed - rdata;
                 i            <= 0;
+                j4           <= 0;
+                j2           <= 0;
                 // check address, configure later
-                if ({rdata,addr[7:0]} >=0  &&  {rdata,addr[7:0]} <10'd1024) begin
+                if ({rdata,addr[7:0]} >=0  &&  {rdata,addr[7:0]} < max_num_locations>>1) begin
                     future_state <= (cmd_type==3) ? RX_DATA : RX_NUM_LOC0;    // else cmd_type==4
                     state        <= REQ_RX_STATUS;
                 end
@@ -206,13 +222,17 @@ always_ff @(posedge clk) begin
             if (rvalid) begin
                 num_loc[15:8] <= rdata;
                 fcs_computed  <= fcs_computed - rdata;
-                future_state  <= RX_FCS;
-                state         <= REQ_RX_STATUS;
+                cmd_status    <= ({rdata,num_loc[7:0]} > 0)  ?  `STATUS_OK     :  `STATUS_ERR_NUM_LOC_0;
+                future_state  <= ({rdata,num_loc[7:0]} > 0)  ?  RX_FCS         :  TX_SFD;
+                state         <= ({rdata,num_loc[7:0]} > 0)  ?  REQ_RX_STATUS  :  REQ_TX_STATUS;
             end
         end
         RX_FCS: begin
             if (rvalid) begin
                 future_state <= TX_SFD;
+                i            <= 0;
+                j4           <= 0;
+                j2           <= 0;
                 if (rdata == fcs_computed) begin
                     cmd_status <= `STATUS_OK;
                     case (cmd_type)
@@ -220,7 +240,7 @@ always_ff @(posedge clk) begin
                         1: state <= ACT_STOP_CPU;
                         2: state <= ACT_START_CPU;
                         3: state <= ACT_WRITE_MEM;
-                        4: state <= ACT_READ_MEM;
+                        4: state <= REQ_TX_STATUS;    // read action inside TX_DATA_xB
                     endcase
                 end
                 else begin
@@ -228,6 +248,128 @@ always_ff @(posedge clk) begin
                     state      <= REQ_TX_STATUS;
                 end
             end
+        end
+
+        ACT_RESET_CPU: begin
+        end
+        ACT_STOP_CPU: begin
+        end
+        ACT_START_CPU: begin
+        end
+        // 0 ≤ addr_rom ≤ 1023;  1024 ≤ addr_sram ≤ 2047
+        ACT_WRITE_MEM: state <= addr[10] ? ACT_WRITE_TO_4B_MEM  : ACT_WRITE_TO_2B_MEM;
+        //ACT_WRITE_MEM: state <= addr[10] ? ((i+4<=size) ? ACT_WRITE_TO_4B_MEM
+        //                                                : ACT_WRITE_TO_4B_MEM_LAST_BYTES)
+        //                                 : ((i+4<=size) ? ACT_WRITE_TO_2B_MEM
+        //                                                : ACT_WRITE_TO_2B_MEM_LAST_BYTES);
+        //ACT_WRITE_TO_4B_MEM: begin
+        //    i <= i + 4;
+        //    if (i+8 <= size) begin    // check 1 4B group ahead
+        //        // write seq sram_din
+        //        sram_addr <= addr;
+        //        sram_din <= {data[i+3], data[i+2], data[i+1], data[i]};  // not synth !!
+        //    end
+        //    else    // if (i+4 == size) → finished
+        //        state <= (i+4 == size) ? REQ_TX_STATUS : ACT_WRITE_TO_4B_MEM_LAST_BYTES;
+        //end
+        ACT_WRITE_TO_4B_MEM: begin
+            i  <= i  + 1;
+            j4 <= j4 + 1;
+            // 1 extra iteration for last mem combinational transaction
+            state <= (j4==0 && i>=size) ? REQ_TX_STATUS : state;
+        end
+        ACT_WRITE_TO_2B_MEM: begin
+            i  <= i  + 1;
+            j2 <= j2 + 1;
+            // 1 extra iteration for last mem combinational transaction
+            state <= (j2==0 && i>=size) ? REQ_TX_STATUS : state;
+        end
+
+        REQ_TX_STATUS: begin
+            if (arready)
+                state <= GET_TX_STATUS;
+        end
+        GET_TX_STATUS: begin
+            if (rvalid)
+                state <= rdata[3] ? REQ_TX_STATUS : REQ_TX;    // advance if not full
+        end
+        REQ_TX: begin
+            if (awready)
+                state <= future_state;
+        end
+
+        TX_SFD: begin
+            future_state <= TX_DNODE;
+            if (wready) begin
+                fcs_computed <= 0;
+                state        <= GET_TX_STATUS;
+            end
+        end
+        TX_DNODE: begin
+            future_state <= TX_SNODE;
+            if (wready) begin
+                fcs_computed <= fcs_computed - wdata;
+                state        <= GET_TX_STATUS;
+            end
+        end
+        TX_SNODE: begin
+            future_state <= TX_SIZE0;
+            if (wready) begin
+                fcs_computed <= fcs_computed - wdata;
+                state        <= GET_TX_STATUS;
+            end
+        end
+        TX_SIZE0: begin
+            future_state <= TX_SIZE1;
+            if (wready) begin
+                fcs_computed <= fcs_computed - wdata;
+                state        <= GET_TX_STATUS;
+            end
+        end
+        TX_SIZE1: begin
+            future_state <= TX_TYPE;
+            if (wready) begin
+                fcs_computed <= fcs_computed - wdata;
+                state        <= GET_TX_STATUS;
+            end
+        end
+        TX_TYPE: begin
+            future_state <= TX_STATUS;
+            if (wready) begin
+                fcs_computed <= fcs_computed - wdata;
+                state        <= GET_TX_STATUS;
+            end
+        end
+        TX_STATUS: begin
+            future_state <= (cmd_type!=4) ? TX_FCS
+                                          : (addr[10]) ? TX_DATA_4B_MEM : TX_DATA_2B_MEM;
+            if (wready) begin
+                fcs_computed <= fcs_computed - wdata;
+                state        <= GET_TX_STATUS;
+            end
+        end
+        TX_DATA_4B_MEM: begin
+            if (wready) begin
+                j4           <= j4 + 1;
+                i            <= (j4==3) ? i+1 : i;
+                fcs_computed <= fcs_computed - sram_dout[j4];
+                state        <= (i >= num_loc-1) ? REQ_TX_STATUS : state;
+            end
+            future_state <= TX_FCS;
+        end
+        TX_DATA_2B_MEM: begin
+            if (wready) begin
+                j2           <= j2 + 1;
+                i            <= (j2==1) ? i+1 : i;
+                fcs_computed <= fcs_computed - rom_dout[j2];
+                state        <= (i >= num_loc-1) ? REQ_TX_STATUS : state;
+            end
+            future_state <= TX_FCS;
+        end
+        TX_FCS: begin
+            future_state <= RX_SFD;
+            if (wready)
+                state        <= GET_TX_STATUS;
         end
     endcase
 end
@@ -241,8 +383,16 @@ always_comb @(*) begin
     awvalid = 0;
     wvalid  = 0;
     awaddr  = 0;
-    awdata  = 0;
+    wdata   = 0;
     bready  = 0;
+    sram_we   = 0;
+    sram_addr = 0;
+    sram_din  = 0;
+    rom_we    = 0;
+    rom_addr  = 0;
+    rom_din   = 0;
+    in32rsh8 = 0;
+    in16rsh8 = 0;
     case (state)
         IDLE: begin
             arvalid = 0;
@@ -299,7 +449,119 @@ always_comb @(*) begin
         RX_FCS: begin
             rready = 1;
         end
+        //ACT_WRITE_TO_4B_MEM: begin
+        //    // write
+        //    sram_addr = addr;
+        //    sram_din  = {data[i+3], data[i+2], data[i+1], data[i]};  // not synth !!
+        //end
+        ACT_WRITE_TO_4B_MEM: begin
+            in32rsh8 = (i<size) ? data[i] : 0;
+            if(i>0 && j4==0) begin
+                sram_we   = 1;
+                sram_addr = addr[9:0];
+                sram_din  = out32rsh8;
+            end
+        end
+        ACT_WRITE_TO_2B_MEM: begin
+            in16rsh8 = (i<size) ? data[i] : 0;
+            if(i>0 && j2==0) begin
+                rom_we   = 1;
+                rom_addr = addr[9:0];
+                rom_din  = out16rsh8;
+            end
+        end
+
+        REQ_TX_STATUS: begin
+            arvalid = 1;
+            araddr  = `STAT_REG_AXI_UART;
+        end
+        GET_TX_STATUS: begin
+            rready = 1;
+        end
+        REQ_TX: begin
+            awvalid = 1;
+            awaddr  = `TX_FIFO_AXI_UART;
+        end
+
+        TX_SFD: begin
+            wvalid = 1;
+            wdata  = 8'hD5;
+        end
+        TX_DNODE: begin
+            wvalid = 1;
+            wdata  = s_node;
+        end
+        TX_SNODE: begin
+            wvalid = 1;
+            wdata  = node_id;
+        end
+        TX_SIZE0: begin
+            wvalid = 1;
+            case (cmd_type)
+                0: wdata = 1;
+                1: wdata = 1;
+                2: wdata = 1;
+                3: wdata = 1;
+                4: wdata = size_read[7:0];
+                default: wdata = 1;
+            endcase
+        end
+        TX_SIZE1: begin
+            wvalid = 1;
+            case (cmd_type)
+                0: wdata = 0;
+                1: wdata = 0;
+                2: wdata = 0;
+                3: wdata = 0;
+                4: wdata = size_read[15:8];
+                default: wdata = 0;
+            endcase
+        end
+        TX_TYPE: begin
+            wvalid = 1;
+            wdata  = cmd_type;
+        end
+        TX_STATUS: begin
+            wvalid = 1;
+            wdata  = cmd_status;
+        end
+        TX_DATA_4B_MEM: begin
+            sram_addr = addr[9:0] + i;
+            wvalid  = 1;
+            wdata   = sram_dout[j4];
+        end
+        TX_DATA_2B_MEM: begin
+            rom_addr = addr[9:0] + i;
+            wvalid  = 1;
+            wdata   = rom_dout[j2];
+        end
+        TX_FCS: begin
+            wvalid = 1;
+            wdata  = fcs_computed;
+        end
     endcase
 end
+
+rshift_k_nbit_reg #(
+    .width(32),
+    .rshift_bits(8)
+) rshift_8_32bit_reg0(
+    .en(1),
+    .rstn(rstn),
+    .clk(clk),
+    .d(in32rsh8),
+    .q(out32rsh8)
+);
+
+rshift_k_nbit_reg #(
+    .width(16),
+    .rshift_bits(8)
+) rshift_8_16bit_reg0(
+    .en(1),
+    .rstn(rstn),
+    .clk(clk),
+    .d(in16rsh8),
+    .q(out16rsh8)
+);
 
 endmodule
