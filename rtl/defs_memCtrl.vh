@@ -9,3 +9,5 @@
 `define STATUS_ERR_BAD_ADDRESS            8'd3
 `define STATUS_ERR_NUM_LOC_0              8'd4
 `define STATUS_ERR_CHECKSUM_MISMATCH      8'd5
+
+`define NUM_CORE_RESET_CYCLES 4'd10

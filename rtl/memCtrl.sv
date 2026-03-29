@@ -6,6 +6,9 @@ module memCtrl #(
 )(
     input clk,
     input rstn,
+    // core channel
+    output reg rstn_to_core,    // comb
+    output reg halt_to_core,    // seq
     // memory channel
     output reg        sram_we,
     output reg [9:0]  sram_addr,
@@ -68,6 +71,7 @@ reg        j2;
 
 always_ff @(posedge clk) begin
     if (!rstn) begin
+        halt_to_core <= 0;
         arvalid <= 0;
         rready  <= 0;
         awvalid <= 0;
@@ -251,10 +255,16 @@ always_ff @(posedge clk) begin
         end
 
         ACT_RESET_CPU: begin
+            i <= i + 1;
+            state <= (i<`NUM_CORE_RESET_CYCLES-1) ? state : REQ_TX_STATUS;
         end
         ACT_STOP_CPU: begin
+            halt_to_core <= 1;
+            state        <= REQ_TX_STATUS;
         end
         ACT_START_CPU: begin
+            halt_to_core <= 0;
+            state        <= REQ_TX_STATUS;
         end
         // 0 ≤ addr_rom ≤ 1023;  1024 ≤ addr_sram ≤ 2047
         ACT_WRITE_MEM: state <= addr[10] ? ACT_WRITE_TO_4B_MEM  : ACT_WRITE_TO_2B_MEM;
@@ -377,6 +387,7 @@ end
 always_comb @(*) begin
     // to avoid latching combinational case blocks, make sure all
     // outputs are written for each iteration
+    rstn_to_core = 1;
     arvalid = 0;
     araddr  = 0;
     rready  = 0;
@@ -469,6 +480,10 @@ always_comb @(*) begin
                 rom_addr = addr[9:0];
                 rom_din  = out16rsh8;
             end
+        end
+
+        ACT_RESET_CPU: begin
+            rstn_to_core = 0;
         end
 
         REQ_TX_STATUS: begin
