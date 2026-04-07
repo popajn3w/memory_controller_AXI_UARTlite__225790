@@ -1,7 +1,8 @@
 `include "defs_memCtrl.vh"
 
 module memCtrl #(
-    parameter max_num_locations = 1024,    // max (1<<14) - 1
+    parameter sram_addr_width = 16,    // max 24 - 1
+    parameter rom_addr_width = 10,     // max sram_addr_width
     parameter node_id = 8'd0
 )(
     input clk,
@@ -11,7 +12,7 @@ module memCtrl #(
     output reg halt_to_core,    // seq
     // memory channel
     output reg        sram_we,
-    output reg [9:0]  sram_addr,
+    output reg [15:0] sram_addr,
     output reg [31:0] sram_din,
     input [3:0][ 7:0] sram_dout,
     output reg        rom_we,
@@ -45,7 +46,7 @@ module memCtrl #(
 
 typedef enum reg [5:0] {
     IDLE, REQ_RX_STATUS, GET_RX_STATUS, REQ_RX, RX_SFD, RX_DNODE, RX_SNODE,
-    RX_SIZE0, RX_SIZE1, RX_TYPE, RX_ADDR0, RX_ADDR1, RX_DATA,
+    RX_SIZE0, RX_SIZE1, RX_TYPE, RX_ADDR0, RX_ADDR1, RX_ADDR2, RX_DATA,
     RX_NUM_LOC0, RX_NUM_LOC1, RX_FCS,
     ACT_RESET_CPU, ACT_STOP_CPU, ACT_START_CPU,
     ACT_WRITE_MEM, ACT_WRITE_TO_4B_MEM, ACT_WRITE_TO_2B_MEM,
@@ -56,15 +57,15 @@ state_t state, future_state;
 reg [7:0] s_node;
 reg [15:0] size;
 reg [7:0] cmd_type;
-reg [15:0] addr;
-reg [7:0] data [0 : 4*max_num_locations-1];
+reg [23:0] addr;
+reg [7:0] data [0 : 4*(1<<sram_addr_width)-1];
 reg [15:0] num_loc;
 reg [7:0] fcs_computed;
 reg [7:0] cmd_status;
 reg [7:0] in32rsh8, in16rsh8;
 wire [31:0] out32rsh8;
 wire [15:0] out16rsh8;
-wire [15:0] size_read =   1   +   (num_loc  <<  (addr[10] ? 2 : 1));
+wire [15:0] size_read =   1   +   (num_loc  <<  (addr[sram_addr_width] ? 2 : 1));
 reg [15:0] i;
 reg [1:0]  j4;
 reg        j2;
@@ -72,15 +73,12 @@ reg        j2;
 always_ff @(posedge clk) begin
     if (!rstn) begin
         halt_to_core <= 0;
-        arvalid <= 0;
-        rready  <= 0;
-        awvalid <= 0;
-        wvalid  <= 0;
         fcs_computed <= 0;
         future_state <= RX_SFD;
         state        <= IDLE;
     end
 
+    else begin
     case (state)
         IDLE: begin
             future_state <= RX_SFD;
@@ -143,7 +141,7 @@ always_ff @(posedge clk) begin
             if (rvalid) begin
                 cmd_type <= rdata;
                 // subtracting ADDR field width, size will represent only data payload width
-                size     <= size - 2;
+                size     <= size - 3;
                 fcs_computed <= fcs_computed - rdata;
                 case (rdata)    // check for legal size:type pair
                     0: begin
@@ -190,11 +188,19 @@ always_ff @(posedge clk) begin
             if (rvalid) begin
                 addr[15:8] <= rdata;
                 fcs_computed <= fcs_computed - rdata;
+                future_state <= RX_ADDR2;
+                state        <= REQ_RX_STATUS;
+            end
+        end
+        RX_ADDR2: begin
+            if (rvalid) begin
+                addr[23:16] <= rdata;
+                fcs_computed <= fcs_computed - rdata;
                 i            <= 0;
                 j4           <= 0;
                 j2           <= 0;
                 // check address, configure later
-                if ({rdata,addr[7:0]} >=0  &&  {rdata,addr[7:0]} < max_num_locations>>1) begin
+                if ({rdata,addr[15:0]} >=0  &&  {rdata,addr[15:0]} < (1<<sram_addr_width+1)-1) begin
                     future_state <= (cmd_type==3) ? RX_DATA : RX_NUM_LOC0;    // else cmd_type==4
                     state        <= REQ_RX_STATUS;
                 end
@@ -209,7 +215,7 @@ always_ff @(posedge clk) begin
             if (rvalid) begin
                 data[i] <= rdata;
                 fcs_computed <= fcs_computed - rdata;
-                future_state <= (i < (size-3)) ? RX_DATA : RX_FCS;
+                future_state <= (i < (size-1)) ? RX_DATA : RX_FCS;
                 i            <= i + 1;
                 state        <= REQ_RX_STATUS;
             end
@@ -266,9 +272,9 @@ always_ff @(posedge clk) begin
             halt_to_core <= 0;
             state        <= REQ_TX_STATUS;
         end
-        // 0 ≤ addr_rom ≤ 1023;  1024 ≤ addr_sram ≤ 2047
-        ACT_WRITE_MEM: state <= addr[10] ? ACT_WRITE_TO_4B_MEM  : ACT_WRITE_TO_2B_MEM;
-        //ACT_WRITE_MEM: state <= addr[10] ? ((i+4<=size) ? ACT_WRITE_TO_4B_MEM
+        // 0 ≤ addr_rom ≤ 1023;  65536 ≤ addr_sram ≤ 65536 + 65536
+        ACT_WRITE_MEM: state <= addr[sram_addr_width] ? ACT_WRITE_TO_4B_MEM  : ACT_WRITE_TO_2B_MEM;
+        //ACT_WRITE_MEM: state <= addr[sram_addr_width] ? ((i+4<=size) ? ACT_WRITE_TO_4B_MEM
         //                                                : ACT_WRITE_TO_4B_MEM_LAST_BYTES)
         //                                 : ((i+4<=size) ? ACT_WRITE_TO_2B_MEM
         //                                                : ACT_WRITE_TO_2B_MEM_LAST_BYTES);
@@ -284,15 +290,13 @@ always_ff @(posedge clk) begin
         //end
         ACT_WRITE_TO_4B_MEM: begin
             i  <= i  + 1;
-            j4 <= j4 + 1;
             // 1 extra iteration for last mem combinational transaction
-            state <= (j4==0 && i>=size) ? REQ_TX_STATUS : state;
+            state <= (i[1:0]==0 && i>=size) ? REQ_TX_STATUS : state;
         end
         ACT_WRITE_TO_2B_MEM: begin
             i  <= i  + 1;
-            j2 <= j2 + 1;
             // 1 extra iteration for last mem combinational transaction
-            state <= (j2==0 && i>=size) ? REQ_TX_STATUS : state;
+            state <= (i[0]==0 && i>=size) ? REQ_TX_STATUS : state;
         end
 
         REQ_TX_STATUS: begin
@@ -352,7 +356,7 @@ always_ff @(posedge clk) begin
         end
         TX_STATUS: begin
             future_state <= (cmd_type!=4) ? TX_FCS
-                                          : (addr[10]) ? TX_DATA_4B_MEM : TX_DATA_2B_MEM;
+                                          : (addr[sram_addr_width]) ? TX_DATA_4B_MEM : TX_DATA_2B_MEM;
             if (wready) begin
                 fcs_computed <= fcs_computed - wdata;
                 state        <= GET_TX_STATUS;
@@ -382,9 +386,10 @@ always_ff @(posedge clk) begin
                 state        <= GET_TX_STATUS;
         end
     endcase
+    end
 end
 
-always_comb @(*) begin
+always_comb begin
     // to avoid latching combinational case blocks, make sure all
     // outputs are written for each iteration
     rstn_to_core = 1;
@@ -467,17 +472,17 @@ always_comb @(*) begin
         //end
         ACT_WRITE_TO_4B_MEM: begin
             in32rsh8 = (i<size) ? data[i] : 0;
-            if(i>0 && j4==0) begin
+            if(i>0 && i[1:0]==0) begin
                 sram_we   = 1;
-                sram_addr = addr[9:0];
+                sram_addr = addr[sram_addr_width-1 : 0];
                 sram_din  = out32rsh8;
             end
         end
         ACT_WRITE_TO_2B_MEM: begin
             in16rsh8 = (i<size) ? data[i] : 0;
-            if(i>0 && j2==0) begin
+            if(i>0 && i[0]==0) begin
                 rom_we   = 1;
-                rom_addr = addr[9:0];
+                rom_addr = addr[rom_addr_width-1 : 0];
                 rom_din  = out16rsh8;
             end
         end
@@ -541,12 +546,12 @@ always_comb @(*) begin
             wdata  = cmd_status;
         end
         TX_DATA_4B_MEM: begin
-            sram_addr = addr[9:0] + i;
+            sram_addr = addr[sram_addr_width-1 : 0] + i;
             wvalid  = 1;
             wdata   = sram_dout[j4];
         end
         TX_DATA_2B_MEM: begin
-            rom_addr = addr[9:0] + i;
+            rom_addr = addr[rom_addr_width-1 : 0] + i;
             wvalid  = 1;
             wdata   = rom_dout[j2];
         end

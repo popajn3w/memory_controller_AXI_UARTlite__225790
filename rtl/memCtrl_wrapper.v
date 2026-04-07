@@ -1,5 +1,6 @@
 module memCtrl_wrapper #(
-    parameter max_num_locations = 1024,
+    parameter sram_addr_width = 16,
+    parameter rom_addr_width = 10,
     parameter node_id = 8'd0
 )(
     input clk,
@@ -9,7 +10,7 @@ module memCtrl_wrapper #(
     output halt_to_core,
     // memory channel
     output        sram_we,
-    output [9:0]  sram_addr,
+    output [15:0] sram_addr,
     output [31:0] sram_din,
     input  [31:0] sram_dout,   // flattened from [3:0][7:0]
     output        rom_we,
@@ -22,17 +23,17 @@ module memCtrl_wrapper #(
     output       arvalid,
     output [3:0] araddr,
 
-    output      rready,
-    input       rvalid,
-    input [7:0] rdata,
-    input [1:0] rresp,
+    output       rready,
+    input        rvalid,
+    input [31:0] rdata,    // extended to DATA_WIDTH==32
+    input [1:0]  rresp,
 
-    input        awready,
-    input        wready,
-    output       awvalid,
-    output       wvalid,
-    output [3:0] awaddr,
-    output [7:0] wdata,
+    input         awready,
+    input         wready,
+    output        awvalid,
+    output        wvalid,
+    output [3:0]  awaddr,
+    output [31:0] wdata,    // extended to DATA_WIDTH==32
 
     output      bready,
     input       bvalid,
@@ -41,9 +42,10 @@ module memCtrl_wrapper #(
 
 
 memCtrl #(
-    .max_num_locations(max_num_locations),
+    .sram_addr_width(sram_addr_width),
+    .rom_addr_width(rom_addr_width),
     .node_id(node_id)
-) dut (
+) memCtrl0 (
     .clk(clk),
     .rstn(rstn),
 
@@ -66,7 +68,7 @@ memCtrl #(
 
     .rready(rready),
     .rvalid(rvalid),
-    .rdata(rdata),
+    .rdata(rdata[7:0]),
     .rresp(rresp),
 
     .awready(awready),
@@ -74,7 +76,7 @@ memCtrl #(
     .awvalid(awvalid),
     .wvalid(wvalid),
     .awaddr(awaddr),
-    .wdata(wdata),
+    .wdata(wdata[7:0]),
 
     .bready(bready),
     .bvalid(bvalid),
