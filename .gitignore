@@ -1,0 +1,11 @@
+# Vivado project non-essentials
+Memory_Controller.cache/
+Memory_Controller.gen/
+Memory_Controller.hw/
+Memory_Controller.ip_user_files/
+Memory_Controller.runs/
+Memory_Controller.sim/
+*.jou
+*.log
+*.pb
+*.dcp
