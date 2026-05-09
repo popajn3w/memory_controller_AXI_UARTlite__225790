@@ -165,9 +165,9 @@ always_ff @(posedge clk) begin
                         state        <= (size>=3) ? REQ_RX_STATUS : REQ_TX_STATUS;
                     end
                     4: begin
-                        cmd_status   <= (size==4) ? `STATUS_OK    : `STATUS_ERR_INCOMPATIBLE_SIZE_TYPE;
-                        future_state <= (size==4) ? RX_ADDR0      : TX_SFD;
-                        state        <= (size==4) ? REQ_RX_STATUS : REQ_TX_STATUS;
+                        cmd_status   <= (size==5) ? `STATUS_OK    : `STATUS_ERR_INCOMPATIBLE_SIZE_TYPE;
+                        future_state <= (size==5) ? RX_ADDR0      : TX_SFD;
+                        state        <= (size==5) ? REQ_RX_STATUS : REQ_TX_STATUS;
                     end
                     default: begin
                         cmd_status   <= `STATUS_ERR_UNSUPPORTED_TYPE;
@@ -307,63 +307,64 @@ always_ff @(posedge clk) begin
             if (rvalid)
                 state <= rdata[3] ? REQ_TX_STATUS : REQ_TX;    // advance if not full
         end
+        // redundant state because slave axilite IP expects addr&data at the same time
         REQ_TX: begin
-            if (awready)
+            if (awready || !awready)
                 state <= future_state;
         end
 
         TX_SFD: begin
-            future_state <= TX_DNODE;
-            if (wready) begin
+            if (awready && wready) begin
                 fcs_computed <= 0;
-                state        <= GET_TX_STATUS;
+                state        <= REQ_TX_STATUS;
             end
+            future_state <= TX_DNODE;
         end
         TX_DNODE: begin
-            future_state <= TX_SNODE;
-            if (wready) begin
+            if (awready && wready) begin
                 fcs_computed <= fcs_computed - wdata;
-                state        <= GET_TX_STATUS;
+                state        <= REQ_TX_STATUS;
             end
+            future_state <= TX_SNODE;
         end
         TX_SNODE: begin
-            future_state <= TX_SIZE0;
-            if (wready) begin
+            if (awready && wready) begin
                 fcs_computed <= fcs_computed - wdata;
-                state        <= GET_TX_STATUS;
+                state        <= REQ_TX_STATUS;
             end
+            future_state <= TX_SIZE0;
         end
         TX_SIZE0: begin
-            future_state <= TX_SIZE1;
-            if (wready) begin
+            if (awready && wready) begin
                 fcs_computed <= fcs_computed - wdata;
-                state        <= GET_TX_STATUS;
+                state        <= REQ_TX_STATUS;
             end
+            future_state <= TX_SIZE1;
         end
         TX_SIZE1: begin
-            future_state <= TX_TYPE;
-            if (wready) begin
+            if (awready && wready) begin
                 fcs_computed <= fcs_computed - wdata;
-                state        <= GET_TX_STATUS;
+                state        <= REQ_TX_STATUS;
             end
+            future_state <= TX_TYPE;
         end
         TX_TYPE: begin
-            future_state <= TX_STATUS;
-            if (wready) begin
+            if (awready && wready) begin
                 fcs_computed <= fcs_computed - wdata;
-                state        <= GET_TX_STATUS;
+                state        <= REQ_TX_STATUS;
             end
+            future_state <= TX_STATUS;
         end
         TX_STATUS: begin
+            if (awready && wready) begin
+                fcs_computed <= fcs_computed - wdata;
+                state        <= REQ_TX_STATUS;
+            end
             future_state <= (cmd_type!=4) ? TX_FCS
                                           : (addr[sram_addr_width]) ? TX_DATA_4B_MEM : TX_DATA_2B_MEM;
-            if (wready) begin
-                fcs_computed <= fcs_computed - wdata;
-                state        <= GET_TX_STATUS;
-            end
         end
         TX_DATA_4B_MEM: begin
-            if (wready) begin
+            if (awready && wready) begin
                 j4           <= j4 + 1;
                 i            <= (j4==3) ? i+1 : i;
                 fcs_computed <= fcs_computed - sram_dout[j4];
@@ -372,7 +373,7 @@ always_ff @(posedge clk) begin
             future_state <= TX_FCS;
         end
         TX_DATA_2B_MEM: begin
-            if (wready) begin
+            if (awready && wready) begin
                 j2           <= j2 + 1;
                 i            <= (j2==1) ? i+1 : i;
                 fcs_computed <= fcs_computed - rom_dout[j2];
@@ -381,9 +382,9 @@ always_ff @(posedge clk) begin
             future_state <= TX_FCS;
         end
         TX_FCS: begin
+            if (awready && wready)
+                state        <= REQ_RX_STATUS;
             future_state <= RX_SFD;
-            if (wready)
-                state        <= GET_TX_STATUS;
         end
     endcase
     end
@@ -400,7 +401,7 @@ always_comb begin
     wvalid  = 0;
     awaddr  = 0;
     wdata   = 0;
-    bready  = 0;
+    bready  = 1;    // ignore, bresp consumed when available
     sram_we   = 0;
     sram_addr = 0;
     sram_din  = 0;
@@ -498,24 +499,32 @@ always_comb begin
         GET_TX_STATUS: begin
             rready = 1;
         end
-        REQ_TX: begin
+        REQ_TX: begin    // redundant state
             awvalid = 1;
             awaddr  = `TX_FIFO_AXI_UART;
         end
 
         TX_SFD: begin
+            awvalid = 1;
+            awaddr  = `TX_FIFO_AXI_UART;
             wvalid = 1;
             wdata  = 8'hD5;
         end
         TX_DNODE: begin
+            awvalid = 1;
+            awaddr  = `TX_FIFO_AXI_UART;
             wvalid = 1;
             wdata  = s_node;
         end
         TX_SNODE: begin
+            awvalid = 1;
+            awaddr  = `TX_FIFO_AXI_UART;
             wvalid = 1;
             wdata  = node_id;
         end
         TX_SIZE0: begin
+            awvalid = 1;
+            awaddr  = `TX_FIFO_AXI_UART;
             wvalid = 1;
             case (cmd_type)
                 0: wdata = 1;
@@ -527,6 +536,8 @@ always_comb begin
             endcase
         end
         TX_SIZE1: begin
+            awvalid = 1;
+            awaddr  = `TX_FIFO_AXI_UART;
             wvalid = 1;
             case (cmd_type)
                 0: wdata = 0;
@@ -538,24 +549,34 @@ always_comb begin
             endcase
         end
         TX_TYPE: begin
+            awvalid = 1;
+            awaddr  = `TX_FIFO_AXI_UART;
             wvalid = 1;
             wdata  = cmd_type;
         end
         TX_STATUS: begin
+            awvalid = 1;
+            awaddr  = `TX_FIFO_AXI_UART;
             wvalid = 1;
             wdata  = cmd_status;
         end
         TX_DATA_4B_MEM: begin
             sram_addr = addr[sram_addr_width-1 : 0] + i;
+            awvalid = 1;
+            awaddr  = `TX_FIFO_AXI_UART;
             wvalid  = 1;
             wdata   = sram_dout[j4];
         end
         TX_DATA_2B_MEM: begin
             rom_addr = addr[rom_addr_width-1 : 0] + i;
+            awvalid = 1;
+            awaddr  = `TX_FIFO_AXI_UART;
             wvalid  = 1;
             wdata   = rom_dout[j2];
         end
         TX_FCS: begin
+            awvalid = 1;
+            awaddr  = `TX_FIFO_AXI_UART;
             wvalid = 1;
             wdata  = fcs_computed;
         end

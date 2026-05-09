@@ -104,7 +104,7 @@ memCtrl #(
 );
 
 core_pipeline core_pipeline0(
-    .rstn(rstn|rstn_to_core),
+    .rstn(rstn&rstn_to_core),
     .clk(clk),
     .halt_ext(halt_to_core),
     .pc_curr_if(pc_curr_if),
