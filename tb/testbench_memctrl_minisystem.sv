@@ -9,6 +9,7 @@ reg  clk;
 reg  uart_rx;
 wire uart_tx;
 localparam int BIT_TIME = 4340;    // F_UART=23400Hz ⇔ T=4.340μs
+byte rom_payload_q[$];
 
 typedef struct {
     logic [3:0] araddr;
@@ -45,10 +46,10 @@ axi_uartlite_wrapper axi_uartlite_wrapper_1_trace_rx(
     .S_AXI_0_araddr(trace_rx.araddr),
     .S_AXI_0_arready(trace_rx.arready),
     .S_AXI_0_arvalid(trace_rx.arvalid),
-    .S_AXI_0_awaddr(0),
+    .S_AXI_0_awaddr(4'b0),
     //.S_AXI_0_awready(awready),    // no connect
-    .S_AXI_0_awvalid(0),
-    .S_AXI_0_bready(0),
+    .S_AXI_0_awvalid(1'b0),
+    .S_AXI_0_bready(1'b0),
     //.S_AXI_0_bresp(bresp),    // no connect
     //.S_AXI_0_bvalid(bvalid),    // no connect
     .S_AXI_0_rdata(trace_rx.rdata),
@@ -58,7 +59,7 @@ axi_uartlite_wrapper axi_uartlite_wrapper_1_trace_rx(
     .S_AXI_0_wdata(0),
     //.S_AXI_0_wready(wready),    // no connect
     //.S_AXI_0_wstrb(),    // no connect
-    .S_AXI_0_wvalid(0)
+    .S_AXI_0_wvalid(1'b0)
 );
 
 axi_uartlite_wrapper axi_uartlite_wrapper_1_trace_tx(
@@ -69,10 +70,10 @@ axi_uartlite_wrapper axi_uartlite_wrapper_1_trace_tx(
     .S_AXI_0_araddr(trace_tx.araddr),
     .S_AXI_0_arready(trace_tx.arready),
     .S_AXI_0_arvalid(trace_tx.arvalid),
-    .S_AXI_0_awaddr(0),
+    .S_AXI_0_awaddr(4'b0),
     //.S_AXI_0_awready(awready),    // no connect
-    .S_AXI_0_awvalid(0),
-    .S_AXI_0_bready(0),
+    .S_AXI_0_awvalid(1'b0),
+    .S_AXI_0_bready(1'b0),
     //.S_AXI_0_bresp(bresp),    // no connect
     //.S_AXI_0_bvalid(bvalid),    // no connect
     .S_AXI_0_rdata(trace_tx.rdata),
@@ -82,7 +83,7 @@ axi_uartlite_wrapper axi_uartlite_wrapper_1_trace_tx(
     .S_AXI_0_wdata(0),
     //.S_AXI_0_wready(wready),    // no connect
     //.S_AXI_0_wstrb(),    // no connect
-    .S_AXI_0_wvalid(0)
+    .S_AXI_0_wvalid(1'b0)
 );
 
 task automatic uart_send_byte(
@@ -116,6 +117,80 @@ task automatic uart_send_bytes(
         uart_send_byte(data_q[i], bit_time_ns, uart_rx);
     end
 endtask
+
+task automatic write_rom_to_binary_file(
+    input string filename,
+    input int start_idx,
+    input int end_idx,
+    input logic [15:0] memory[]   // or input shortint memory[]
+);
+    int fd;
+    int i;
+
+    fd = $fopen(filename, "wb");
+    if (fd == 0) begin
+        $display("ERROR: Could not open %s", filename);
+        return;
+    end
+
+    for (i = start_idx; i <= end_idx; i++) begin
+        // Write 16-bit value as two bytes (little-endian)
+        byte hi = memory[i][15:8];
+        byte lo = memory[i][7:0];
+        $fwrite(fd, "%c%c", lo, hi);
+    end
+
+    $fclose(fd);
+    $display("Wrote memory[%0d:%0d] to %s", start_idx, end_idx, filename);
+endtask
+
+task automatic read_binary_file_to_queue(
+    input  string filename,
+    output byte   rom_payload[$]
+);
+    int fd;
+    int file_size;
+    int bytes_read;
+    //byte tmp;
+    logic [7:0] tmp;
+
+    rom_payload = {};  // clear queue
+
+    fd = $fopen(filename, "rb");
+    if (fd == 0) begin
+        $display("ERROR: Cannot open %s", filename);
+        return;
+    end
+
+    // Determine file size
+    $fseek(fd, 0, 2);          // seek to end
+    file_size = $ftell(fd);    // get position = size
+    $fseek(fd, 0, 0);          // rewind to start
+
+    // Read byte-by-byte
+    repeat (file_size) begin
+        bytes_read = $fread(tmp, fd);    // 1B read
+        if (bytes_read != 1) begin
+            $display("ERROR: fread failed before EOF");
+            $display("%d bytes read, file_size=%d, fd=%d, current_pos=%d", bytes_read, file_size, fd, $ftell(fd));
+            break;
+        end
+        rom_payload.push_back(tmp);
+    end
+
+    $fclose(fd);
+    $display("Loaded %0d bytes from %s", rom_payload.size(), filename);
+endtask
+
+task automatic display_compute_fcs (input byte data_q[$]);
+    byte fcs = -1 - 187-1 - 3 - 0;    // - Dnode - Snode - size - type - ADDR
+
+    foreach (data_q[i]) begin
+        fcs = fcs - data_q[i];
+    end
+    $display("simulator_fcs = %08h", fcs);
+endtask
+
 
 initial begin
     clk = 0;
@@ -429,6 +504,10 @@ initial begin    // RISC core base test
     dut.rom0.memory[219] = {`NOP};
     // }
 
+    #100;
+    write_rom_to_binary_file("../../../../../tb/memory_dump_base0.bin", 0,219, dut.rom0.memory);
+    read_binary_file_to_queue("../../../../../tb/memory_dump_base0.bin", rom_payload_q);
+    display_compute_fcs(rom_payload_q);
     //$stop();
 end
 
