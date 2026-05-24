@@ -278,6 +278,40 @@ initial begin    // main test, memCtrl
     uart_send_bytes({8'hD5,0,1, 0,0, 2, 8'hFD}, BIT_TIME, uart_rx);    // start
     # 300000 ;
     uart_send_bytes({8'hD5,0,1, 0,0, 0, 8'hFF}, BIT_TIME, uart_rx);    // reset
+    # 300000 ;
+
+    for (int i = 0; i <= 219; i++)    // wipe rom
+        dut.rom0.memory[i] = `NOP;
+    #50 ;
+    uart_send_bytes({8'hD5,0,1, 0,0, 1, 8'hFE}, BIT_TIME, uart_rx);    // stop
+    $display("stop command");
+    # 300000 ;
+    read_binary_file_to_queue("../../../../../tb/command_write_rom_base_prog.bin", rom_payload_q);
+    uart_send_bytes(rom_payload_q, BIT_TIME, uart_rx);    // write rom
+    $display("write rom command");
+    # 300000 ;
+    uart_send_bytes({8'hD5,0,1, 0,0, 2, 8'hFD}, BIT_TIME, uart_rx);    // start
+    # 300000 ;
+    $display("start command");
+    uart_send_bytes({8'hD5,0,1, 0,0, 0, 8'hFF}, BIT_TIME, uart_rx);    // reset
+    # 300000 ;
+    $display("reset command");
+
+    read_binary_file_to_queue("../../../../../tb/command_write_sram0_1.bin", rom_payload_q);
+    uart_send_bytes(rom_payload_q, BIT_TIME, uart_rx);    // write rom
+    # 200000 ;
+    $display("write sram[0] command");
+    read_binary_file_to_queue("../../../../../tb/command_write_sram110_2G.bin", rom_payload_q);
+    uart_send_bytes(rom_payload_q, BIT_TIME, uart_rx);    // write rom
+    # 300000 ;
+    $display("write sram[110] command");
+    read_binary_file_to_queue("../../../../../tb/command_read_sram0-11.bin", rom_payload_q);
+    uart_send_bytes(rom_payload_q, BIT_TIME, uart_rx);    // write rom
+    # 200000 ;
+    $display("write sram[110] command");
+    read_binary_file_to_queue("../../../../../tb/command_read_sram110.bin", rom_payload_q);
+    uart_send_bytes(rom_payload_q, BIT_TIME, uart_rx);    // write rom
+    $display("write sram[110] command");
 
 
     $stop();
