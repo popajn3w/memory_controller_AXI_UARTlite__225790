@@ -454,6 +454,9 @@ always_comb begin
         RX_ADDR1: begin
             rready = 1;
         end
+        RX_ADDR2: begin
+            rready = 1;
+        end
         RX_DATA: begin
             rready = 1;
         end
@@ -475,7 +478,7 @@ always_comb begin
             in32rsh8 = (i<size) ? data[i] : 0;
             if(i>0 && i[1:0]==0) begin
                 sram_we   = 1;
-                sram_addr = addr[sram_addr_width-1 : 0];
+                sram_addr = addr[sram_addr_width-1 : 0] + (i>>2)-1;
                 sram_din  = out32rsh8;
             end
         end
@@ -483,7 +486,7 @@ always_comb begin
             in16rsh8 = (i<size) ? data[i] : 0;
             if(i>0 && i[0]==0) begin
                 rom_we   = 1;
-                rom_addr = addr[rom_addr_width-1 : 0];
+                rom_addr = addr[rom_addr_width-1 : 0] + (i>>1)-1;
                 rom_din  = out16rsh8;
             end
         end
@@ -587,7 +590,7 @@ rshift_k_nbit_reg #(
     .width(32),
     .rshift_bits(8)
 ) rshift_8_32bit_reg0(
-    .en(1),
+    .en(1'b1),
     .rstn(rstn),
     .clk(clk),
     .d(in32rsh8),
@@ -598,7 +601,7 @@ rshift_k_nbit_reg #(
     .width(16),
     .rshift_bits(8)
 ) rshift_8_16bit_reg0(
-    .en(1),
+    .en(1'b1),
     .rstn(rstn),
     .clk(clk),
     .d(in16rsh8),

@@ -15,7 +15,7 @@ wire [31:0] sram_dout;
 wire        rom_we;
 wire [ 9:0] rom_addr;
 wire [15:0] rom_din;
-wire [31:0] rom_dout;
+wire [15:0] rom_dout;
 
 wire arready, arvalid;
 wire [3:0] araddr;
